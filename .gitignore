@@ -1,0 +1,8 @@
+node_modules/
+*.bak
+*.bak-*
+*.log
+.DS_Store
+Thumbs.db
+.releases/
+plugin-backups/
