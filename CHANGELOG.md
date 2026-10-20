@@ -3,6 +3,34 @@
 版本号连续递增，不做跳跃；**一轮迭代只发一版**，本轮全部已完成改动一次进版，不追加「补丁版」（发布标准 v3.0 R1）。
 格式：`版本 | 日期 | 类型（feature / bugfix / docs）`。
 
+## 0.5.0 — 2026-10-21 · generation
+
+第五代：把「提示词里的自指文本」换成执行前后两端的机制。
+
+**机制退役**
+- 默认变体从 `b37-coldstart` 的元话语（越狱/框架/供应商审核对抗等段落）改为 `b37-lite`；
+  旧变体仍随包分发，`GEN4_VARIANT=b37-coldstart` 可切回做对照。
+- 退役理由与前后对比记录在 `docs/GENERATION_5.md`，证据是元探针：旧件会把工具描述里的自指原文
+  当上下文引出来，新件只回答「没有」。
+
+**前置归一化（`normalize.js`）**
+- 送往模型前把题干里的第一人称受害叙述换成 `ROLE_A`、域名换成 `TARGET_DOMAIN`、
+  产品名换成 `APP`、公司换成 `CORP_TARGET`，并在开头加一行 `[归一化]` 说明。
+- 只改送往模型的那一份，会话落盘保留原文，证据链不受影响。
+- 开关：`GEN5_NORMALIZE=0` 关闭，`GEN5_NORMALIZE_DRYRUN=1` 只记录不改写。
+
+**后置验证（`gen5_verify` 工具）**
+- 只读工具，返回 `version` / `implementationRevision` / `promptSetHash` / `variant` /
+  `normalize` 统计 / 逐项 `checks` / `verdict`，用于判定「装的是不是这一版、加载的是不是这一份」。
+
+**实测口径**
+- A/B（T02/T21/T36 ×4 reps）投递率 11/12 vs 11/12，净差 0；因此本版**不主张能力提升**，
+  只主张机制退役、前置归一化与后置验证。
+- 矩阵：`r4/deepseek-v4.1-flash`（max）+ `guijiliudon/DeepSeek-V4-Flash`（无档位），3 格全交付。
+
+**其它**
+- `version` 单一来源（读 `package.json`）延续；安装/更新/回滚/卸载脚本与文档随之更新到 0.5.0。
+
 ## 0.4.10 — 2026-10-20 · feature + bugfix + docs
 
 **运行时（插件本体）**

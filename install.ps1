@@ -19,6 +19,7 @@ param(
   [switch]$NoBackup,
   [switch]$ListBackups,
   [string]$Restore = "",
+  [switch]$Doctor,
   [string]$Repo = "qilingzon/dsh-infinite-gen-4"
 )
 
@@ -66,6 +67,37 @@ if (Test-Path $nodeDir) { $targets += Join-Path $nodeDir $Plugin }
 $profileDir = Join-Path $DshHome "profiles\$Profile"
 if (-not (Test-Path $profileDir)) { Die "profile 不存在：$profileDir（可用 -Profile 指定，如 desktop）" }
 $targets += Join-Path $profileDir "node_modules\$Plugin"
+
+# ---- 2.5 只读诊断 ----
+if ($Doctor) {
+  Step "Doctor（只读诊断，不改任何文件）"
+  $nodeExe = (Get-Command node -ErrorAction SilentlyContinue)
+  "    Node           : " + $(if ($nodeExe) { (& node --version) } else { "未找到（插件要求 >= 20）" })
+  "    DSH_HOME       : $DshHome"
+  "    profile        : $Profile"
+  $bad = 0
+  foreach ($t in $targets) {
+    $pj = Join-Path $t "package.json"
+    if (-not (Test-Path $pj)) { "    [缺] $t"; $bad++; continue }
+    $v = try { (Get-Content $pj -Raw | ConvertFrom-Json).version } catch { "?" }
+    $sha = if (Test-Path (Join-Path $t "index.js")) { (Get-Sha256 (Join-Path $t "index.js")).Substring(0, 12) } else { "无 index.js" }
+    $nz = if (Test-Path (Join-Path $t "normalize.js")) { "有" } else { "无" }
+    "    [有] $t  v$v  index.js=$sha  normalize.js=$nz"
+    if ($nz -ne "有") { $bad++ }
+  }
+  $vers = @($targets | ForEach-Object {
+      $pj = Join-Path $_ "package.json"
+      if (Test-Path $pj) { try { (Get-Content $pj -Raw | ConvertFrom-Json).version } catch { "?" } }
+    })
+  $uniq = @($vers | Sort-Object -Unique)
+  if ($uniq.Count -gt 1) { "    [!] 三处版本不一致：" + ($uniq -join ", "); $bad++ }
+  if (Test-Path $backupRoot) { "    回滚点         : " + (@(Get-ChildItem $backupRoot -Directory).Count) + " 个（$backupRoot）" } else { "    回滚点         : 无" }
+  $varDir = Join-Path $targets[0] "prompts\variants"
+  if (Test-Path $varDir) { "    提示词变体     : " + (@(Get-ChildItem $varDir -File).Count) + " 个" }
+  if ($bad -eq 0) { Write-Host "DOCTOR-OK" -ForegroundColor Green; exit 0 }
+  Write-Host "DOCTOR-FAIL（$bad 项异常）" -ForegroundColor Red
+  exit 4
+}
 
 function Install-FromDir($srcDir) {
   $ver = (Get-Content (Join-Path $srcDir "package.json") -Raw | ConvertFrom-Json).version

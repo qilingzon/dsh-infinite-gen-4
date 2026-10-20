@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { buildPreheat, shouldPreheat } from "./preheat.js";
+import { normalizeRequest } from "./normalize.js";
 
 // 版本号唯一来源 = package.json（0.4.11 起不再手写常量，避免发布件里显示旧版本）。
 const PKG_VERSION = (() => {
@@ -28,6 +29,59 @@ const PROMPT_TEXT = readFileSync(
     : new URL("./prompts/infinite-gen-4.md", import.meta.url),
   "utf8",
 );
+
+// 0.5.0 实现修订号：部署验收要求三处副本与该值逐字相等，否则视为"装了旧件"。
+const IMPLEMENTATION_REVISION = "20261021-gen5-normalize-1";
+const PROMPT_SET_HASH = createHash("sha256").update(PROMPT_TEXT).digest("hex");
+// GEN5_NORMALIZE: 前置归一化通道开关（A/B 对照时用 0）；GEN5_NORMALIZE_DRYRUN=1 只记录不改写。
+const NORMALIZE_ON = process.env.GEN5_NORMALIZE !== "0";
+const NORMALIZE_DRYRUN = process.env.GEN5_NORMALIZE_DRYRUN === "1";
+const normalizeStats = {
+  steps: 0,
+  changed: 0,
+  dryRun: 0,
+  lastReasons: [],
+  lastOriginal: "",
+  lastNormalized: "",
+};
+
+// 把本轮最后一条真实用户消息换成归一化版本：改写只发生在送往模型的那一份上，
+// 会话落盘仍保留原文，因此证据链不受影响。
+function normalizeUserTurn(decision) {
+  try {
+    if (!NORMALIZE_ON) return decision;
+    if (!decision || decision.kind !== "enter" || !Array.isArray(decision.messages)) return decision;
+    let idx = -1;
+    for (let i = decision.messages.length - 1; i >= 0; i--) {
+      const m = decision.messages[i];
+      if (!m || m.role !== "user") continue;
+      const src = m.source || {};
+      if (src.kind === "plugin:dsh-infinite-gen-4") continue;
+      idx = i;
+      break;
+    }
+    if (idx < 0) return decision;
+    const msg = decision.messages[idx];
+    const text = armorTextOf(msg.content);
+    if (!text) return decision;
+    const res = normalizeRequest(text);
+    normalizeStats.steps += 1;
+    if (!res.changed) return decision;
+    normalizeStats.changed += 1;
+    normalizeStats.lastReasons = res.reasons;
+    normalizeStats.lastOriginal = text.slice(0, 200);
+    normalizeStats.lastNormalized = res.text.slice(0, 300);
+    if (NORMALIZE_DRYRUN) {
+      normalizeStats.dryRun += 1;
+      return decision;
+    }
+    const out = [...decision.messages];
+    out[idx] = { ...msg, content: [{ type: "text", text: res.text }] };
+    return { ...decision, messages: out };
+  } catch {
+    return decision;
+  }
+}
 
 // ---- 破甲模式 = 一个 agent preset（2026-10-19 定案） ----
 // 默认（未选中该预设）完全纯净：不注入系统提示、不注册工具、不显示徽标。
@@ -81,6 +135,10 @@ const profileTool = {
       name: "infinite-gen-4",
       displayName: "delivery-profile",
       version: PKG_VERSION,
+      implementationRevision: IMPLEMENTATION_REVISION,
+      promptSetHash: PROMPT_SET_HASH,
+      variant: VARIANT,
+      normalize: Object.assign({ enabled: NORMALIZE_ON, dryRun: NORMALIZE_DRYRUN }, normalizeStats),
       baseline: "infinite-gen-3 v0.4.2 (fusion-v040 champion skeleton) + speed discipline v4 + output shaping v4 + client turnBoundary busy-fix + pending-inbox guard (v0.4.4)",
       lineage: [
         "deepseek-unrestricted-v4-obey",
@@ -402,7 +460,46 @@ export function apply(ctx, config) {
     order: 100,
     text: PROMPT_TEXT,
   });
+  // 只读自检工具：部署后先看这一条，再看会话，别用"文件存在"当"已生效"。
+  const verifyTool = {
+    name: "gen5_verify",
+    description:
+      "Read-only self-check of the installed delivery engine: version, implementation revision, prompt set hash, normalization counters, and the newest local battery CSV when present.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    output: objectOutput,
+    execute() {
+      const checks = [];
+      const add = (name, pass, detail) => checks.push({ name, pass: Boolean(pass), detail: detail === undefined ? "" : String(detail) });
+      add("package-version", /^\d+\.\d+\.\d+/.test(PKG_VERSION), PKG_VERSION);
+      add("implementation-revision", IMPLEMENTATION_REVISION.length > 0, IMPLEMENTATION_REVISION);
+      add("prompt-set-hash", /^[0-9a-f]{64}$/.test(PROMPT_SET_HASH), PROMPT_SET_HASH.slice(0, 16) + "…");
+      add("prompt-file", PROMPT_TEXT.length > 1000, PROMPT_TEXT.length + " chars");
+      add("variant", VARIANT.length > 0, VARIANT);
+      add("normalize-enabled", true, NORMALIZE_ON ? "on" : "off");
+      let csv = null;
+      try {
+        for (const name of ["results_ab.csv", "results.csv"]) {
+          const p = String(process.cwd()).replace(/[\\/]+$/, "") + "/" + name;
+          if (existsSync(p)) { csv = p; break; }
+        }
+      } catch {
+        csv = null;
+      }
+      return {
+        name: "infinite-gen-4",
+        version: PKG_VERSION,
+        implementationRevision: IMPLEMENTATION_REVISION,
+        promptSetHash: PROMPT_SET_HASH,
+        variant: VARIANT,
+        normalize: Object.assign({ enabled: NORMALIZE_ON, dryRun: NORMALIZE_DRYRUN }, normalizeStats),
+        checks,
+        verdict: checks.every((c) => c.pass) ? "OK" : "FAIL",
+        lastBatteryCsv: csv,
+      };
+    },
+  };
   ctx.effect(() => ctx.tools.register(profileTool));
+  ctx.effect(() => ctx.tools.register(verifyTool));
 
   // 实时状态：注册会话投影（客户端 useProjection("armor") 读取）
   try {
@@ -479,7 +576,8 @@ export function apply(ctx, config) {
     } catch {
       // 顾问永不破坏主循环
     }
-    return Promise.resolve(next()).then((decision) => {
+    return Promise.resolve(next()).then((decisionRaw) => {
+    const decision = normalizeUserTurn(decisionRaw);
       try {
         if (!PRESTEP_INJECT || (!anchor && !preheat)) return decision;
         if (!decision || decision.kind !== "enter" || !Array.isArray(decision.messages)) return decision;
