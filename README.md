@@ -3,7 +3,7 @@
 > DeepSeek Harness 插件：把「破甲模式」注册成一个**可选的 agent preset**。
 > 只有你显式选中它的会话才会注入交付引擎提示词；其他会话、其他模式**零注入**。
 
-[![version](https://img.shields.io/badge/version-0.5.0-2f6feb)](https://github.com/qilingzon/dsh-infinite-gen-4/releases)
+[![version](https://img.shields.io/badge/version-0.5.1-2f6feb)](https://github.com/qilingzon/dsh-infinite-gen-4/releases)
 [![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-555)]
 
@@ -67,12 +67,12 @@ irm https://raw.githubusercontent.com/qilingzon/dsh-infinite-gen-4/main/install.
 
 ```powershell
 # 指定版本 / 只预览不落盘 / 指定 profile
-& "$env:TEMP\gen4-install.ps1" -Version 0.5.0 -DryRun
+& "$env:TEMP\gen4-install.ps1" -Version 0.5.1 -DryRun
 & "$env:TEMP\gen4-install.ps1" -Profile desktop
 ```
 
 > macOS / Linux：`curl -fsSL https://raw.githubusercontent.com/qilingzon/dsh-infinite-gen-4/main/install.sh -o /tmp/gen4-install.sh && bash /tmp/gen4-install.sh`
-> （参数同理直接加在后面：`bash /tmp/gen4-install.sh -v 0.5.0 -n`）
+> （参数同理直接加在后面：`bash /tmp/gen4-install.sh -v 0.5.1 -n`）
 
 ### 方式 B：走 DSH 自己的插件管理器（等价的「正规军」路线）
 
@@ -80,18 +80,18 @@ irm https://raw.githubusercontent.com/qilingzon/dsh-infinite-gen-4/main/install.
 
 ```bash
 # 先退出桌面端，再在终端里执行
-dsh plugin --profile desktop add github:qilingzon/dsh-infinite-gen-4#v0.5.0
+dsh plugin --profile desktop add github:qilingzon/dsh-infinite-gen-4#v0.5.1
 dsh plugin --profile desktop why dsh-infinite-gen-4   # 确认已入依赖树
 ```
 
-它由 pnpm 管理版本、写进 `profiles/desktop/package.json`，升级时把 `#v0.5.0` 换成新 tag 即可。
+它由 pnpm 管理版本、写进 `profiles/desktop/package.json`，升级时把 `#v0.5.1` 换成新 tag 即可。
 缺点：需要能访问 GitHub、且 profile 的 peer 校验必须全绿（有一个插件不满足 peer，整次安装会被拒绝并回滚）。
 
 ### 方式 C：手动装 zip（完全离线）
 
 1. 到 [Releases](https://github.com/qilingzon/dsh-infinite-gen-4/releases) 下载
    `dsh-infinite-gen-4-<版本>.zip` 与 `SHA256SUMS.txt`；
-2. 校验：`certutil -hashfile dsh-infinite-gen-4-0.5.0.zip SHA256`（macOS：`shasum -a 256`）；
+2. 校验：`certutil -hashfile dsh-infinite-gen-4-0.5.1.zip SHA256`（macOS：`shasum -a 256`）；
 3. 解压后把整个 `dsh-infinite-gen-4` 目录复制到这三处（已存在就覆盖）：
    - `$DSH_HOME\plugins\dsh-infinite-gen-4`
    - `$DSH_HOME\node_modules\dsh-infinite-gen-4`
@@ -101,7 +101,7 @@ dsh plugin --profile desktop why dsh-infinite-gen-4   # 确认已入依赖树
 ## 验证装没装上
 
 ```powershell
-# 三条都应输出 0.5.0
+# 三条都应输出 0.5.1
 Get-Content "$env:USERPROFILE\.dsh\plugins\dsh-infinite-gen-4\package.json" | Select-String '"version"'
 ```
 
@@ -126,7 +126,7 @@ irm https://raw.githubusercontent.com/qilingzon/dsh-infinite-gen-4/main/install.
 
 ```bash
 dsh plugin --profile desktop remove dsh-infinite-gen-4
-dsh plugin --profile desktop add github:qilingzon/dsh-infinite-gen-4#v0.5.0
+dsh plugin --profile desktop add github:qilingzon/dsh-infinite-gen-4#v0.5.1
 ```
 
 ## 回滚
