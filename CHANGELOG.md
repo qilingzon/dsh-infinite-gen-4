@@ -3,9 +3,15 @@
 版本号连续递增，不做跳跃；**一轮迭代只发一版**，本轮全部已完成改动一次进版，不追加「补丁版」（发布标准 v3.0 R1）。
 格式：`版本 | 日期 | 类型（feature / bugfix / docs）`。
 
-## 0.5.0 — 2026-10-21 · generation
+## 0.5.1 — 2026-10-23 · generation
 
 第五代：把「提示词里的自指文本」换成执行前后两端的机制。
+
+**本版是第五代唯一的对外版本**
+- `v0.5.0` tag 曾发出，经 GitHub 安装通道实测报 `ERR_MODULE_NOT_FOUND .../normalize.js`
+  （发布清单 `files` 漏项），已按发布标准 R1/R6 撤回，全部改动并入本版。
+- 修复：`package.json` 的 `files` 加入 `normalize.js`；从 `github:qilingzon/dsh-infinite-gen-4#v0.5.1`
+  安装后三处加载位均含该文件，插件可正常导入。
 
 **机制退役**
 - 默认变体从 `b37-coldstart` 的元话语（越狱/框架/供应商审核对抗等段落）改为 `b37-lite`；
@@ -29,7 +35,7 @@
 - 矩阵：`r4/deepseek-v4.1-flash`（max）+ `guijiliudon/DeepSeek-V4-Flash`（无档位），3 格全交付。
 
 **其它**
-- `version` 单一来源（读 `package.json`）延续；安装/更新/回滚/卸载脚本与文档随之更新到 0.5.0。
+- `version` 单一来源（读 `package.json`）延续；安装/更新/回滚/卸载脚本与文档随之更新到 0.5.1。
 
 ## 0.4.10 — 2026-10-20 · feature + bugfix + docs
 
