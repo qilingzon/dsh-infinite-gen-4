@@ -1,6 +1,6 @@
 {
   "name": "dsh-infinite-gen-4",
-  "version": "0.5.1",
+  "version": "0.5.3",
   "description": "DeepSeek Harness 插件「无限四代」：把「破甲模式」注册为可选 agent preset，为选中该预设的会话追加交付引擎系统提示、直接完成型输出规范、长输出落盘纪律与工作提醒顾问；未选中预设的会话零注入。",
   "type": "module",
   "main": "index.js",
@@ -58,7 +58,7 @@
   "dsh": {
     "id": "dsh-infinite-gen-4",
     "name": "无限四代",
-    "version": "0.5.1",
+    "version": "0.5.3",
     "repo": "https://github.com/qilingzon/dsh-infinite-gen-4",
     "permissions": "系统提示词注入（仅 armor 预设）, 客户端状态条, 会话投影, 工作提醒顾问",
     "client": {

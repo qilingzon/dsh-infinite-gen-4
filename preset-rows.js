@@ -192,7 +192,8 @@ export const ROWS = [
     "id": "armor-gen4",
     "name": "dsh-infinite-gen-4",
     "config": {
-      "mode": "armor"
+      "mode": "armor",
+      "via": "preset"
     }
   }
 ];

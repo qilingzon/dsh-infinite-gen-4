@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { buildPreheat, shouldPreheat } from "./preheat.js";
 import { normalizeRequest } from "./normalize.js";
 
@@ -31,7 +33,7 @@ const PROMPT_TEXT = readFileSync(
 );
 
 // 0.5.0 实现修订号：部署验收要求三处副本与该值逐字相等，否则视为"装了旧件"。
-const IMPLEMENTATION_REVISION = "20261021-gen5-normalize-1";
+const IMPLEMENTATION_REVISION = "20261023-gen52-scope-1";
 const PROMPT_SET_HASH = createHash("sha256").update(PROMPT_TEXT).digest("hex");
 // GEN5_NORMALIZE: 前置归一化通道开关（A/B 对照时用 0）；GEN5_NORMALIZE_DRYRUN=1 只记录不改写。
 const NORMALIZE_ON = process.env.GEN5_NORMALIZE !== "0";
@@ -81,6 +83,68 @@ function normalizeUserTurn(decision) {
   } catch {
     return decision;
   }
+}
+
+// ---- 启用范围（0.5.2）----
+// local（默认）：只有选中「破甲模式」预设的会话注入框架，其他预设零污染。
+// global：本 profile 的所有预设（标准/极简/破甲…）都注入，徽标也全模式显示。
+// 读取优先级：环境变量 GEN4_SCOPE > 行配置 config.scope > 设置文件 > 默认 local。
+// 设置文件由徽标点击（POST /gen4/scope）或 tools/scope.ps1 写入；两个实例都轮询它，
+// 因此切换范围是热生效的（无需重启宿主）。
+const SCOPE_VALUES = new Set(["local", "global"]);
+const SCOPE_FILE = join(process.env.DSH_HOME || join(homedir(), ".dsh"), ".dsh-infinite-gen-4.json");
+let scopeFileCache = { value: undefined, mtimeMs: -1 };
+// 当前生效范围（local | global），由 apply() 每次 refresh 时刷新，供工具/自检回报。
+let activeScope = "local";
+// scope 路由只注册一次（常驻实例；webServer 可能晚于本插件就绪）。
+let scopeRouteRegistered = false;
+
+function normalizeScope(value) {
+  const v = String(value === undefined || value === null ? "" : value).trim().toLowerCase();
+  return SCOPE_VALUES.has(v) ? v : undefined;
+}
+
+function envScope() {
+  return normalizeScope(process.env.GEN4_SCOPE);
+}
+
+function readScopeFile() {
+  try {
+    const st = statSync(SCOPE_FILE);
+    if (st.mtimeMs === scopeFileCache.mtimeMs) return scopeFileCache.value;
+    const raw = JSON.parse(readFileSync(SCOPE_FILE, "utf8"));
+    const v = normalizeScope(raw && raw.scope);
+    scopeFileCache = { value: v, mtimeMs: st.mtimeMs };
+    return v;
+  } catch {
+    scopeFileCache = { value: undefined, mtimeMs: -1 };
+    return undefined;
+  }
+}
+
+function writeScopeFile(scope) {
+  try {
+    mkdirSync(join(SCOPE_FILE, ".."), { recursive: true });
+    writeFileSync(
+      SCOPE_FILE,
+      JSON.stringify({ scope, updatedAt: new Date().toISOString(), by: "badge" }, null, 2) + "\n",
+      "utf8",
+    );
+    scopeFileCache = { value: scope, mtimeMs: statSync(SCOPE_FILE).mtimeMs };
+    return true;
+  } catch (error) {
+    console.error("[dsh-infinite-gen-4] 写设置文件失败:", error);
+    return false;
+  }
+}
+
+function resolveScope(config) {
+  return (
+    envScope() ||
+    normalizeScope(config === null || typeof config !== "object" ? undefined : config.scope) ||
+    readScopeFile() ||
+    "local"
+  );
 }
 
 // ---- 破甲模式 = 一个 agent preset（2026-10-19 定案） ----
@@ -138,6 +202,8 @@ const profileTool = {
       implementationRevision: IMPLEMENTATION_REVISION,
       promptSetHash: PROMPT_SET_HASH,
       variant: VARIANT,
+      scope: activeScope,
+      scopeFile: SCOPE_FILE,
       normalize: Object.assign({ enabled: NORMALIZE_ON, dryRun: NORMALIZE_DRYRUN }, normalizeStats),
       baseline: "infinite-gen-3 v0.4.2 (fusion-v040 champion skeleton) + speed discipline v4 + output shaping v4 + client turnBoundary busy-fix + pending-inbox guard (v0.4.4)",
       lineage: [
@@ -444,22 +510,194 @@ function declareArmorPreset(ctx) {
   );
 }
 
+// 启用范围路由（常驻实例注册一次）：GET 读、POST 写。写入只影响本插件的注入范围，
+// 且只接受同源请求（桌面端 origin 是 dsh-app://app，浏览器端是 127.0.0.1）。
+function sameOrigin(req) {
+  const headers = (req && req.headers) || {};
+  if (String(headers["sec-fetch-site"] || "") === "cross-site") return false;
+  const origin = String(headers.origin || "");
+  if (!origin) return true;
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "dsh-app:") return true;
+    return url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1" || url.hostname === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
+function registerScopeRoute(ctx, config) {
+  // webServer 不是硬依赖：headless 等没有 Web 服务的宿主下，插件必须照常激活，
+  // 只是徽标点击不可用（设置文件/环境变量仍然生效）。故用软注入 + 幂等标志。
+  let webServer;
+  try {
+    webServer = ctx.get("webServer");
+  } catch {
+    webServer = undefined;
+  }
+  if (webServer === undefined || typeof webServer.register !== "function") return false;
+  if (scopeRouteRegistered) return true;
+  scopeRouteRegistered = true;
+  const state = (extra) =>
+    Object.assign(
+      {
+        ok: true,
+        scope: resolveScope(config),
+        envOverride: envScope() || null,
+        file: SCOPE_FILE,
+        version: PKG_VERSION,
+      },
+      extra || {},
+    );
+  const send = (res, code, payload) => {
+    try {
+      const body = JSON.stringify(payload);
+      res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(body);
+    } catch {
+      // 连接已断，忽略
+    }
+  };
+  const handler = (req, res) => {
+    try {
+      if (req.method === "GET") {
+        send(res, 200, state());
+        return;
+      }
+      if (req.method !== "POST") {
+        send(res, 405, { ok: false, error: "method" });
+        return;
+      }
+      if (!sameOrigin(req)) {
+        send(res, 403, { ok: false, error: "origin" });
+        return;
+      }
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+        if (body.length > 4096) req.destroy();
+      });
+      req.on("end", () => {
+        let wanted;
+        try {
+          const parsed = JSON.parse(body || "{}");
+          wanted = normalizeScope(parsed && parsed.scope);
+        } catch {
+          wanted = undefined;
+        }
+        if (!wanted) {
+          send(res, 400, { ok: false, error: "scope" });
+          return;
+        }
+        if (envScope()) {
+          send(res, 409, state({ ok: false, error: "env-override" }));
+          return;
+        }
+        const ok = writeScopeFile(wanted);
+        send(res, ok ? 200 : 500, state({ ok }));
+      });
+    } catch (error) {
+      send(res, 500, { ok: false, error: String((error && error.message) || error) });
+    }
+  };
+  try {
+    ctx.effect(() => webServer.register({ kind: "exact", path: "/gen4/scope", handler }), "infinite-gen-4: scope route");
+  } catch (error) {
+    console.error("[dsh-infinite-gen-4] scope 路由注册失败:", error);
+    scopeRouteRegistered = false;
+    return false;
+  }
+  return true;
+}
+
 export function apply(ctx, config) {
   loadConfig();
 
-  const armor = config !== null && typeof config === "object" && config.mode === "armor";
-  if (!armor) {
-    // 纯净模式：只登记预设卡片，不注入任何框架内容。
-    declareArmorPreset(ctx);
-    return;
+  // 预设行挂载的实例（preset-rows.js 的 armor-gen4 行）带 via:"preset"（旧版只有 mode:"armor"）。
+  const presetInstance =
+    config !== null &&
+    typeof config === "object" &&
+    (config.via === "preset" || config.mode === "armor");
+
+  // 预设卡片在任何实例下都登记：常驻实例负责把「破甲模式」挂进预设选择器。
+  declareArmorPreset(ctx);
+  if (!presetInstance) {
+    // webServer 可能晚于本插件就绪：软等它，等不到也不影响激活（只影响徽标点击）。
+    registerScopeRoute(ctx, config);
+    try {
+      if (typeof ctx.inject === "function") ctx.inject(["webServer"], () => registerScopeRoute(ctx, config));
+    } catch {
+      // 宿主子集没有 inject：靠上面的直接尝试
+    }
   }
 
-  // 破甲模式实例：该预设被选中时由宿主挂载，此时无条件启用完整框架。
-  ctx.systemPrompt.section({
+  // 谁负责注入：局部（默认）由预设实例注入；全局由常驻实例注入——两者互斥，避免双份提示词。
+  const shouldActivate = () => {
+    const scope = resolveScope(config);
+    activeScope = scope;
+    return presetInstance ? scope !== "global" : scope === "global";
+  };
+
+  let disposeActive = null;
+  const refresh = () => {
+    let want = false;
+    try {
+      want = shouldActivate();
+    } catch {
+      want = false;
+    }
+    if (want && disposeActive === null) {
+      try {
+        disposeActive = activate(ctx, config);
+      } catch (error) {
+        console.error("[dsh-infinite-gen-4] 启用失败:", error);
+        disposeActive = null;
+      }
+      return;
+    }
+    if (!want && disposeActive !== null) {
+      try {
+        disposeActive();
+      } catch {
+        // 卸载异常不阻塞切换
+      }
+      disposeActive = null;
+    }
+  };
+  refresh();
+  // 设置文件可能被 tools/scope.ps1 或另一个实例改写：轮询兜底（热生效）。
+  const timer = setInterval(refresh, 3000);
+  if (timer && typeof timer.unref === "function") timer.unref();
+  ctx.effect(
+    () => () => {
+      clearInterval(timer);
+      if (disposeActive !== null) {
+        try {
+          disposeActive();
+        } catch {
+          // 忽略
+        }
+        disposeActive = null;
+      }
+    },
+    "infinite-gen-4: scope",
+  );
+}
+
+// 激活态：注入系统提示、注册工具/投影/顾问钩子。返回一次性卸载函数（可反复挂载）。
+function activate(ctx, config) {
+  const disposers = [];
+  const own = (d) => {
+    if (typeof d === "function") disposers.push(d);
+    return d;
+  };
+
+  // 破甲实例：此处即启用完整框架。
+  own(ctx.systemPrompt.section({
     name: "infinite-gen-4:global-system-prompt",
     order: 100,
     text: PROMPT_TEXT,
-  });
+  }));
   // 只读自检工具：部署后先看这一条，再看会话，别用"文件存在"当"已生效"。
   const verifyTool = {
     name: "gen5_verify",
@@ -476,6 +714,7 @@ export function apply(ctx, config) {
       add("prompt-file", PROMPT_TEXT.length > 1000, PROMPT_TEXT.length + " chars");
       add("variant", VARIANT.length > 0, VARIANT);
       add("normalize-enabled", true, NORMALIZE_ON ? "on" : "off");
+      add("scope", SCOPE_VALUES.has(activeScope), activeScope + (envScope() ? " (env override)" : ""));
       let csv = null;
       try {
         for (const name of ["results_ab.csv", "results.csv"]) {
@@ -491,6 +730,7 @@ export function apply(ctx, config) {
         implementationRevision: IMPLEMENTATION_REVISION,
         promptSetHash: PROMPT_SET_HASH,
         variant: VARIANT,
+        scope: activeScope,
         normalize: Object.assign({ enabled: NORMALIZE_ON, dryRun: NORMALIZE_DRYRUN }, normalizeStats),
         checks,
         verdict: checks.every((c) => c.pass) ? "OK" : "FAIL",
@@ -498,24 +738,22 @@ export function apply(ctx, config) {
       };
     },
   };
-  ctx.effect(() => ctx.tools.register(profileTool));
-  ctx.effect(() => ctx.tools.register(verifyTool));
+  own(ctx.tools.register(profileTool));
+  own(ctx.tools.register(verifyTool));
 
   // 实时状态：注册会话投影（客户端 useProjection("armor") 读取）
   try {
     const projections = ctx.get("sessionProjections");
     if (projections !== undefined) {
-      ctx.effect(
-        () =>
-          projections.register({
-            key: "armor",
-            stateVersion: 1,
-            schema: { parse: (value) => value },
-            view: (state) => ({ ...state, mode: "armor" }),
-            init: () => ({ running: false, verdict: null, words: [], partial: false, mode: "armor" }),
-            apply: armorProjectionApply,
-          }),
-        "infinite-gen-4: armor projection",
+      own(
+        projections.register({
+          key: "armor",
+          stateVersion: 1,
+          schema: { parse: (value) => value },
+          view: (state) => ({ ...state, mode: "armor" }),
+          init: () => ({ running: false, verdict: null, words: [], partial: false, mode: "armor" }),
+          apply: armorProjectionApply,
+        }),
       );
     }
   } catch (error) {
@@ -535,7 +773,7 @@ export function apply(ctx, config) {
   }
 
   // 主通道：agent/pre-step waterfall —— 检测拒绝/周期到期 => 追加重申消息
-  ctx.on("agent/pre-step", ({ agent, messages, turn }, next) => {
+  own(ctx.on("agent/pre-step", ({ agent, messages, turn }, next) => {
     let anchor = null;
   let preheat = null;
     try {
@@ -619,10 +857,10 @@ export function apply(ctx, config) {
         return decision;
       }
     });
-  });
+  }));
 
   // 兜底通道：tools/post-execute —— 每 N 次工具执行经 additionalContexts 重申（v2 生态已验证的消息通道）
-  ctx.on("tools/post-execute", async (exec, _result, next) => {
+  own(ctx.on("tools/post-execute", async (exec, _result, next) => {
     let anchor = false;
     try {
       if (exec && exec.agent) {
@@ -650,5 +888,17 @@ export function apply(ctx, config) {
       ...downstream,
       additionalContexts: prependContext(notice, downstream ? downstream.additionalContexts : undefined),
     };
-  });
+  }));
+
+  // 卸载：逆序释放本实例注册的提示词段/工具/投影/钩子，便于范围热切换。
+  return () => {
+    while (disposers.length > 0) {
+      const dispose = disposers.pop();
+      try {
+        dispose();
+      } catch {
+        // 单个释放失败不阻塞其余
+      }
+    }
+  };
 }
